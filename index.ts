@@ -1,5 +1,7 @@
 import * as _ from 'lodash';
 
+type Solutions = Puzzle[] & { incomplete?: boolean };
+
 class Best<T> {
   value: T | null = null;
   score: number = Infinity;
@@ -50,14 +52,24 @@ class Puzzle {
     random = false,
     numbers = true,
     shadings = true,
+    depth = Infinity,
+    max_steps = Infinity,
   }: {
-    solutions?: Puzzle[];
+    solutions?: Solutions;
     solution_num?: number;
     random?: boolean;
     numbers?: boolean;
     shadings?: boolean;
+    depth?: number;
+    max_steps?: number;
   } = {}) {
-    if (solutions.length >= solution_num) return solutions;
+    const early_return = { solutions, steps: 0 };
+    if (solutions.length >= solution_num) return early_return;
+
+    if (depth <= 0 || max_steps < 1) {
+      solutions.incomplete = true;
+      return early_return;
+    }
 
     if (Math.random() < 1 / 100000) this.print();
 
@@ -88,12 +100,12 @@ class Puzzle {
       }
 
       if (best_number.value?.possibilities.length === 0 || best_shading.value?.possibilities.length === 0)
-        return solutions;
+        return early_return;
     }
 
     if (best_number.value === null && best_shading.value === null) {
       solutions.push(this.clone());
-      return solutions;
+      return early_return;
     }
 
     const min_score_so_far = Math.min(best_number.score, best_shading.score);
@@ -123,40 +135,68 @@ class Puzzle {
     }
 
     const min_score = Math.min(best_number.score, best_shading.score, best_coordinate.score);
+    const maybe_shuffle = random ? _.shuffle : <T>(a: T) => a;
+    let steps = 1;
 
     if (best_number.score === min_score && best_number.value !== null) {
-      for (const number of random ? _.shuffle(best_number.value.possibilities) : best_number.value.possibilities) {
+      for (const number of maybe_shuffle(best_number.value.possibilities)) {
         this.numbers[best_number.value.index] = number;
-        this.solve({ solutions, solution_num, random });
+        const result = this.solve({
+          solutions,
+          solution_num,
+          random,
+          numbers,
+          shadings,
+          depth: depth - 1,
+          max_steps: max_steps - steps,
+        });
         this.numbers[best_number.value.index] = null;
-        if (solutions.length >= solution_num) return solutions;
+        steps += result.steps;
+        if (solutions.length >= solution_num) return { solutions, steps };
       }
     } else if (best_coordinate.score === min_score && best_coordinate.value !== null) {
-      for (const index of random
-        ? _.shuffle(best_coordinate.value.possibilities)
-        : best_coordinate.value.possibilities) {
+      for (const index of maybe_shuffle(best_coordinate.value.possibilities)) {
         this.numbers[index] = best_coordinate.value.number;
-        this.solve({ solutions, solution_num, random });
+        const result = this.solve({
+          solutions,
+          solution_num,
+          random,
+          numbers,
+          shadings,
+          depth: depth - 1,
+          max_steps: max_steps - steps,
+        });
         this.numbers[index] = null;
-        if (solutions.length >= solution_num) return solutions;
+        steps += result.steps;
+        if (solutions.length >= solution_num) return { solutions, steps };
       }
     } else if (best_shading.score === min_score && best_shading.value !== null) {
-      for (const shading of random ? _.shuffle(best_shading.value.possibilities) : best_shading.value.possibilities) {
+      for (const shading of maybe_shuffle(best_shading.value.possibilities)) {
         this.shadings[best_shading.value.index] = shading;
-        this.solve({ solutions, solution_num, random });
+        const result = this.solve({
+          solutions,
+          solution_num,
+          random,
+          numbers,
+          shadings,
+          depth: depth - 1,
+          max_steps: max_steps - steps,
+        });
         this.shadings[best_shading.value.index] = null;
-        if (solutions.length >= solution_num) return solutions;
+        steps += result.steps;
+        if (solutions.length >= solution_num) return { solutions, steps };
       }
     }
 
-    return solutions;
+    return { solutions, steps };
   }
 
   reduce({
     max_reduce = Infinity,
     numbers = true,
     shadings = true,
-  }: { max_reduce?: number; numbers?: boolean; shadings?: boolean } = {}) {
+    max_steps = Infinity,
+  }: { max_reduce?: number; numbers?: boolean; shadings?: boolean; max_steps?: number } = {}) {
     console.log();
 
     const required_numbers = Array.from(this.numbers, () => false);
@@ -185,16 +225,18 @@ class Puzzle {
         for (const option of options) {
           process.stdout.write(`\rReductions: ${reductions} + ${++step}`);
           if (option.type === 'number') {
-            if (this.is_number_needed(option.index)) {
+            const is_number_needed = this.is_number_needed(option.index, max_steps);
+            if (is_number_needed === true) {
               required_numbers[option.index] = true;
-            } else {
+            } else if (is_number_needed === false) {
               this.numbers[option.index] = null;
               return true;
             }
           } else if (option.type === 'shading') {
-            if (this.is_shading_needed(option.index)) {
+            const is_shading_needed = this.is_shading_needed(option.index, max_steps);
+            if (is_shading_needed === true) {
               required_shadings[option.index] = true;
-            } else {
+            } else if (is_shading_needed === false) {
               this.shadings[option.index] = null;
               return true;
             }
@@ -208,38 +250,38 @@ class Puzzle {
     console.log();
   }
 
-  // TODO: have shadings switch
-  is_number_needed(index: number) {
+  is_number_needed(index: number, max_steps = Infinity) {
     const possibilities = this.number_possibilities(index, 2);
     if (possibilities.length === 1) {
       return false;
     }
     const original_number = this.numbers[index];
-    const solutions: Puzzle[] = [];
+    const solutions: Solutions = [];
     for (let number = 1; number <= this.size; ++number) {
       if (number === original_number) continue;
       this.numbers[index] = number;
-      this.solve({ solutions, solution_num: 1 });
+      this.solve({ solutions, solution_num: 1, max_steps });
+      if (solutions.incomplete) break;
     }
     this.numbers[index] = original_number;
-    return solutions.length > 0;
+    return solutions.incomplete || solutions.length > 0;
   }
 
-  // TODO: have numbers switch
-  is_shading_needed(index: number) {
+  is_shading_needed(index: number, max_steps = Infinity) {
     const possibilities = this.shading_possibilities(index, 2);
     if (possibilities.length === 1) {
       return false;
     }
     const original_shading = this.shadings[index];
-    const solutions: Puzzle[] = [];
+    const solutions: Solutions = [];
     for (const shading of [true, false]) {
       if (shading === original_shading) continue;
       this.shadings[index] = shading;
-      this.solve({ solutions, solution_num: 1 });
+      this.solve({ solutions, solution_num: 1, max_steps });
+      if (solutions.incomplete) break;
     }
     this.shadings[index] = original_shading;
-    return solutions.length > 0;
+    return solutions.incomplete || solutions.length > 0;
   }
 
   check(index: number) {
@@ -496,13 +538,13 @@ const solve_basic = () => {
   puzzle.$explore_any = false;
   puzzle.$basic_shade_explore = true;
   puzzle.$explore_coordinates = true;
-  const solutions = time(() => puzzle.solve({ solution_num: 2, random: true, shadings: false }), 10);
+  const result = time(() => puzzle.solve({ solution_num: 2, random: true, shadings: false }), 10);
 
-  console.log('solutions:', solutions.length);
+  console.log('solutions:', result.solutions.length);
   console.log('improved:', puzzle.$times_improved_shading);
   console.log('not-improved:', puzzle.$times_identical_shading);
   puzzle.print();
-  solutions[0].print();
+  result.solutions[0].print();
 };
 
 const solve_fortress = () => {
@@ -551,37 +593,66 @@ const solve_fortress = () => {
   console.log('not-improved:', puzzle.$times_identical_shading);
   console.log('solving big fortress (basic, exhaustive)');
   puzzle.$explore_coordinates = false;
-  const solution = time(() => puzzle.solve({ solution_num: 2 }));
+  const result = time(() => puzzle.solve({ solution_num: 2 }));
 
-  solution[0].print();
+  result.solutions[0].print();
 };
 
 const generate = () => {
   console.log('generating new puzzle');
-  const new_solve = new Puzzle(4, 2, 2, []).solve({ solution_num: 1, random: true });
+  const empty_puzzle = new Puzzle(
+    9,
+    3,
+    3,
+    [],
+    // prettier-ignore
+    [
+      t, f, f, t, f, t, f, f, t,
+      f, t, t, f, t, f, t, t, f,
+      f, t, t, f, t, f, t, t, f,
+      t, f, f, t, t, t, f, f, t,
+      f, t, t, t, f, t, t, t, f,
+      t, f, f, t, t, t, f, f, t,
+      f, t, t, f, t, f, t, t, f,
+      f, t, t, f, t, f, t, t, f,
+      t, f, f, t, f, t, f, f, t,
+    ],
+  );
+  empty_puzzle.print();
+  let new_solve = (() => {
+    while (true) {
+      const result = empty_puzzle.solve({ solution_num: 1, random: true, max_steps: 5000 });
+      console.log('steps taken:', result.steps);
+      if (result.solutions.length > 0) {
+        return result;
+      }
+    }
+  })();
 
-  new_solve[0].print();
+  new_solve.solutions[0].print();
 
   return time(() => {
-    const new_puzzle = new_solve[0].clone();
-    new_puzzle.reduce();
-    console.log('improved:', new_puzzle.$times_improved_shading);
-    console.log('not-improved:', new_puzzle.$times_identical_shading);
+    console.log('reducing...');
+    const new_puzzle = new_solve.solutions[0].clone();
+    new_puzzle.reduce({ shadings: false, max_steps: 5000 });
     new_puzzle.print();
 
     console.log('solving...');
-    const solutions = time(() => new_puzzle.solve({ solution_num: 2 }));
-    solutions[0].print();
-    if (solutions.length > 1) {
-      solutions[1].print();
+    const result = time(() => new_puzzle.solve({ solution_num: 2 }));
+
+    // Check correctness
+    if (result.solutions.length === 0) {
+      throw new Error('UNSOLVABLE');
+    }
+    result.solutions[0].print();
+    if (result.solutions.length > 1) {
+      console.log('non-unique:');
+      result.solutions[1].print();
       throw new Error('NON UNIQUE');
     }
+
     return new_puzzle;
   });
 };
 
-let puzzle: Puzzle | null = null;
-while (puzzle === null || puzzle?.numbers.some((number) => number !== null)) {
-  puzzle = generate();
-}
-puzzle?.print();
+const puzzle = generate();
