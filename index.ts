@@ -26,6 +26,7 @@ class Best<T> {
 class Puzzle {
   numbers: (number | null)[];
   shadings: (boolean | null)[];
+  circles: (boolean | null)[];
 
   constructor(
     public size: number,
@@ -33,17 +34,17 @@ class Puzzle {
     public box_height: number,
     numbers: (number | null)[] = [],
     shadings: (boolean | null)[] = [],
+    circles: (boolean | null)[] = [],
   ) {
-    this.numbers = this.load(numbers);
+    this.numbers = this.numbers = Array.from({ length: this.size * this.size }, (_, index) => numbers[index] || null);
     this.shadings = Array.from({ length: this.size * this.size }, (_, index) => shadings[index] ?? null);
+    this.circles = Array.from({ length: this.size * this.size }, (_, index) => circles[index] ?? null);
   }
 
   load(numbers: (number | null)[]) {
     return (this.numbers = Array.from({ length: this.size * this.size }, (_, index) => numbers[index] || null));
   }
 
-  $explore_any = false;
-  $explore_any_chase_one = true;
   $explore_coordinates = true;
 
   solve({
@@ -52,6 +53,7 @@ class Puzzle {
     random = false,
     numbers = true,
     shadings = true,
+    circles = false,
     depth = Infinity,
     max_steps = Infinity,
   }: {
@@ -60,6 +62,7 @@ class Puzzle {
     random?: boolean;
     numbers?: boolean;
     shadings?: boolean;
+    circles?: boolean;
     depth?: number;
     max_steps?: number;
   } = {}) {
@@ -71,10 +74,10 @@ class Puzzle {
       return early_return;
     }
 
-    if (Math.random() < 1 / 100000) this.print();
+    if (Math.random() < 1 / 10000) this.print();
 
-    let best_number = new Best<{ index: number; possibilities: number[] }>(random && this.$explore_any);
-    let best_shading = new Best<{ index: number; possibilities: boolean[] }>(random && this.$explore_any);
+    let best_number = new Best<{ index: number; possibilities: number[] }>(random);
+    let best_shading = new Best<{ index: number; possibilities: boolean[] }>(random);
 
     for (let index = 0; index < this.numbers.length; ++index) {
       if (numbers && this.numbers[index] === null) {
@@ -82,9 +85,7 @@ class Puzzle {
           index,
           (best_number.value?.possibilities.length ?? Infinity) + 1,
         );
-        const score = this.$explore_any
-          ? Math.min(this.$explore_any_chase_one ? 2 : 1, possibilities.length)
-          : possibilities.length;
+        const score = possibilities.length;
         best_number.consider({ index, possibilities }, score);
       }
 
@@ -93,11 +94,14 @@ class Puzzle {
           index,
           (best_shading.value?.possibilities.length ?? Infinity) + 1,
         );
-        const score = this.$explore_any
-          ? Math.min(this.$explore_any_chase_one ? 2 : 1, possibilities.length)
-          : (possibilities.length - 1) * this.size + 1;
+        const interesting =
+          this.numbers[index] !== null ||
+          [...this.neighbours(index)].some((neighbour) => this.circles[neighbour] === true);
+        const score = interesting ? possibilities.length : (possibilities.length - 1) * this.size + 1;
         best_shading.consider({ index, possibilities }, score);
       }
+
+      if (!this.check(index)) return early_return;
 
       if (best_number.value?.possibilities.length === 0 || best_shading.value?.possibilities.length === 0)
         return early_return;
@@ -109,7 +113,7 @@ class Puzzle {
     }
 
     const min_score_so_far = Math.min(best_number.score, best_shading.score);
-    let best_coordinate = new Best<{ number: number; possibilities: number[] }>(random && this.$explore_any);
+    let best_coordinate = new Best<{ number: number; possibilities: number[] }>(random);
 
     if (numbers && this.$explore_coordinates && min_score_so_far > 1) {
       (() => {
@@ -122,9 +126,7 @@ class Puzzle {
                 (best_coordinate.value?.possibilities.length ?? Infinity) + 1,
               );
               if (possibilities.length === 1 && this.numbers[possibilities[0]] === number) continue;
-              const score = this.$explore_any
-                ? Math.min(this.$explore_any_chase_one ? 2 : 1, possibilities.length)
-                : possibilities.length;
+              const score = possibilities.length;
 
               best_coordinate.consider({ number, possibilities }, score);
               if (best_coordinate.score < min_score_so_far) return;
@@ -287,8 +289,29 @@ class Puzzle {
   check(index: number) {
     const shading = this.shadings[index];
     const number = this.numbers[index];
+    const circle = this.circles[index];
     const coords = this.get_coordinates(index);
 
+    // Circles can't be shaded
+    if (circle === true && shading === true) {
+      return false;
+    }
+
+    // Check shading inequalities
+    if (number !== null && shading !== null) {
+      for (const neighbour_index of this.neighbours(index)) {
+        const neighbour_number = this.numbers[neighbour_index];
+        const neighbour_shading = this.shadings[neighbour_index];
+        // Neighbour must have number and shadings must be different for rules to apply
+        if (neighbour_number === null || neighbour_shading === null || neighbour_shading === shading) continue;
+        // Numbers in shaded cells are greater than their unshaded neighbours, and vice versa
+        if (number > neighbour_number !== shading) {
+          return false;
+        }
+      }
+    }
+
+    // Check sudoku rules
     if (number !== null) {
       for (let i = 0; i < this.numbers.length; ++i) {
         if (i === index) continue;
@@ -301,16 +324,47 @@ class Puzzle {
       }
     }
 
-    if (number !== null && shading !== null) {
+    const explore = (index: number, explore_null: boolean, explored: boolean[] = []) => {
+      explored[index] = true;
+      let explored_num = 1;
+
       for (const neighbour_index of this.neighbours(index)) {
-        const neighbour_number = this.numbers[neighbour_index];
-        const neighbour_shading = this.shadings[neighbour_index];
-        // Neighbour must have number and shadings must be different for rules to apply
-        if (neighbour_number === null || neighbour_shading === null || neighbour_shading === shading) continue;
-        // Numbers in shaded cells are greater than their unshaded neighbours, and vice versa
-        if (number > neighbour_number !== shading) {
-          return false;
+        const shading = this.shadings[neighbour_index];
+        if (shading === false || (!explore_null && shading === null) || explored[neighbour_index]) continue;
+        explored_num += explore(neighbour_index, explore_null, explored);
+      }
+      return explored_num;
+    };
+
+    // Check circle shading conditions
+    if (number !== null && circle === true) {
+      // TODO: Understand how other circles touching the explored region have an impact on its size
+      if (explore(index, false) - 1 > number) return false;
+      if (explore(index, true) - 1 < number) return false;
+    }
+
+    const find_circles = (index: number, explored: boolean[] = [], circles: number[] = []) => {
+      explored[index] = true;
+      for (const neighbour_index of this.neighbours(index)) {
+        if (explored[neighbour_index]) continue;
+        const circle = this.circles[neighbour_index];
+        const shading = this.shadings[neighbour_index];
+        if (circle === true) {
+          circles.push(neighbour_index);
+          continue;
+        } else if (shading !== true) {
+          continue;
         }
+        find_circles(neighbour_index, explored, circles);
+      }
+      return circles;
+    };
+
+    // Check that this shading doesn't ruin any circle conditions
+    if (circle !== true && shading !== null) {
+      const circles = find_circles(index);
+      for (const circle_index of circles) {
+        if (!this.check(circle_index)) return false;
       }
     }
 
@@ -333,57 +387,15 @@ class Puzzle {
     return possibilities;
   }
 
-  $basic_shade_explore = true;
-  $times_improved_shading = 0;
-  $times_identical_shading = 0;
-
   shading_possibilities(index: number, possibility_num = Infinity) {
     const original = this.shadings[index];
     const possibilities: boolean[] = [];
 
     for (const shading of [true, false]) {
       this.shadings[index] = shading;
-
-      if (this.$basic_shade_explore) {
-        if (this.check(index)) {
-          possibilities.push(shading);
-        }
-        continue;
+      if (this.check(index)) {
+        possibilities.push(shading);
       }
-
-      const original_verdict = this.check(index);
-      let pushed = false;
-
-      if (this.numbers[index] === null) {
-        // Ensure that there's a number which could be placed in this cell
-        const num_poss = this.number_possibilities(index, 1);
-        if (num_poss.length > 0) {
-          possibilities.push(shading);
-          pushed = true;
-        }
-      } else {
-        // Ensure that all neighbours have a possible number placement
-        const possible = (() => {
-          for (const neighbour of this.neighbours(index)) {
-            const num_poss = this.number_possibilities(neighbour, 1);
-            if (num_poss.length === 0) {
-              return false;
-            }
-          }
-          return true;
-        })();
-        if (possible) {
-          possibilities.push(shading);
-          pushed = true;
-        }
-      }
-
-      if (original_verdict !== pushed) {
-        ++this.$times_improved_shading;
-      } else {
-        ++this.$times_identical_shading;
-      }
-
       if (possibilities.length >= possibility_num) break;
     }
 
@@ -449,8 +461,11 @@ class Puzzle {
       if (this.shadings[index] === false) {
         process.stdout.write('\u001b[41m');
       }
+      if (this.circles[index]) {
+        process.stdout.write('\u001b[4m');
+      }
       process.stdout.write(this.numbers[index]?.toString() ?? '-');
-      if (this.shadings[index] !== null) {
+      if (this.shadings[index] !== null || this.circles[index]) {
         process.stdout.write('\u001b[0m');
       }
       if (index % this.size === this.size - 1) {
@@ -475,7 +490,7 @@ class Puzzle {
   }
 
   clone() {
-    return new Puzzle(this.size, this.box_width, this.box_height, this.numbers, this.shadings);
+    return new Puzzle(this.size, this.box_width, this.box_height, this.numbers, this.shadings, this.circles);
   }
 }
 
@@ -521,28 +536,15 @@ const solve_basic = () => {
     ],
   );
 
-  console.log('explore any chase one basic');
-  puzzle.$explore_any = true;
-  puzzle.$explore_any_chase_one = true;
-  puzzle.$basic_shade_explore = true;
+  console.log('explore basic');
   puzzle.$explore_coordinates = false;
   time(() => puzzle.solve({ solution_num: 2, random: true }), 10);
 
-  console.log('explore min basic');
-  puzzle.$explore_any = false;
-  puzzle.$basic_shade_explore = true;
-  puzzle.$explore_coordinates = false;
-  time(() => puzzle.solve({ solution_num: 2, random: true }), 10);
-
-  console.log('explore min complex');
-  puzzle.$explore_any = false;
-  puzzle.$basic_shade_explore = true;
+  console.log('explore complex');
   puzzle.$explore_coordinates = true;
   const result = time(() => puzzle.solve({ solution_num: 2, random: true, shadings: false }), 10);
 
   console.log('solutions:', result.solutions.length);
-  console.log('improved:', puzzle.$times_improved_shading);
-  console.log('not-improved:', puzzle.$times_identical_shading);
   puzzle.print();
   result.solutions[0].print();
 };
@@ -581,16 +583,12 @@ const solve_fortress = () => {
   console.log('solving big fortress (complex, early stop)');
   puzzle.$explore_coordinates = true;
   time(() => puzzle.solve({ solution_num: 1 }));
-  console.log('improved:', puzzle.$times_improved_shading);
-  console.log('not-improved:', puzzle.$times_identical_shading);
   console.log('solving big fortress (basic, early stop)');
   puzzle.$explore_coordinates = false;
   time(() => puzzle.solve({ solution_num: 1 }));
   console.log('solving big fortress (complex, exhaustive)');
   puzzle.$explore_coordinates = true;
   time(() => puzzle.solve({ solution_num: 2 }));
-  console.log('improved:', puzzle.$times_improved_shading);
-  console.log('not-improved:', puzzle.$times_identical_shading);
   console.log('solving big fortress (basic, exhaustive)');
   puzzle.$explore_coordinates = false;
   const result = time(() => puzzle.solve({ solution_num: 2 }));
@@ -655,4 +653,36 @@ const generate = () => {
   });
 };
 
-const puzzle = generate();
+const generate_sudokurotto = () => {
+  const empty_puzzle = new Puzzle(
+    9,
+    3,
+    3,
+    // prettier-ignore
+    [],
+    // prettier-ignore
+    [],
+    // prettier-ignore
+    [
+      f, t, f, f, f, f, f, t, f,
+      t, f, f, f, f, f, f, f, t,
+      f, f, f, f, f, f, f, f, f,
+      f, f, f, f, f, f, f, f, f,
+      f, f, f, f, t, f, f, f, f,
+      f, f, f, f, f, f, f, f, f,
+      f, f, f, f, f, f, f, f, f,
+      t, f, f, f, f, f, f, f, t,
+      f, t, f, f, f, f, f, t, f,
+    ],
+  );
+  while (true) {
+    const result = empty_puzzle.solve({ random: true, solution_num: 1, max_steps: 20000 });
+    console.log('steps:', result.steps);
+    if (result.solutions.length > 0) {
+      result.solutions[0].print();
+      break;
+    }
+  }
+};
+
+const puzzle = generate_sudokurotto();
